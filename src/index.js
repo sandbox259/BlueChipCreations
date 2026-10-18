@@ -26,8 +26,13 @@ async function handleContact(request, env) {
   }
 
   if (!env.TURNSTILE_SECRET) {
+    console.error("TURNSTILE_SECRET is missing.");
+
     return jsonResponse(
-      { ok: false, error: "Server security configuration is missing" },
+      {
+        ok: false,
+        error: "Server security configuration is missing",
+      },
       500
     );
   }
@@ -36,7 +41,9 @@ async function handleContact(request, env) {
 
   try {
     form = await request.formData();
-  } catch {
+  } catch (err) {
+    console.error("Form parsing failed:", String(err));
+
     return jsonResponse(
       { ok: false, error: "Invalid form data" },
       400
@@ -51,12 +58,15 @@ async function handleContact(request, env) {
     token.length > 2048
   ) {
     return jsonResponse(
-      { ok: false, error: "Please complete the security check" },
+      {
+        ok: false,
+        error: "Please complete the security check",
+      },
       400
     );
   }
 
-  // Reject submissions that trigger the honeypot field.
+  // Honeypot spam protection.
   if (String(form.get("_honey") || "").trim() !== "") {
     return jsonResponse(
       { ok: false, error: "Invalid submission" },
@@ -78,12 +88,15 @@ async function handleContact(request, env) {
     message.length > 10000
   ) {
     return jsonResponse(
-      { ok: false, error: "Please check the form fields and try again" },
+      {
+        ok: false,
+        error: "Please check the form fields and try again",
+      },
       400
     );
   }
 
-  // Verify the Turnstile token server-side.
+  // Verify Turnstile with Cloudflare's server-side API.
   let verification;
 
   try {
@@ -110,6 +123,11 @@ async function handleContact(request, env) {
     );
 
     if (!verifyResponse.ok) {
+      console.error(
+        "Turnstile HTTP status:",
+        verifyResponse.status
+      );
+
       return jsonResponse(
         {
           ok: false,
@@ -120,7 +138,12 @@ async function handleContact(request, env) {
     }
 
     verification = await verifyResponse.json();
-  } catch {
+  } catch (err) {
+    console.error(
+      "Turnstile request failed:",
+      String(err)
+    );
+
     return jsonResponse(
       {
         ok: false,
@@ -130,11 +153,22 @@ async function handleContact(request, env) {
     );
   }
 
+  // Require successful verification and the expected hostname/action.
   if (
     verification.success !== true ||
     verification.action !== "contact" ||
     !ALLOWED_HOSTNAMES.has(verification.hostname)
   ) {
+    console.error(
+      "Turnstile verification rejected:",
+      JSON.stringify({
+        success: verification.success,
+        action: verification.action,
+        hostname: verification.hostname,
+        errorCodes: verification["error-codes"],
+      })
+    );
+
     return jsonResponse(
       {
         ok: false,
@@ -144,7 +178,7 @@ async function handleContact(request, env) {
     );
   }
 
-  // Send the email only after successful CAPTCHA verification.
+  // Send email only after Turnstile succeeds.
   const emailForm = new FormData();
 
   emailForm.set("name", name);
@@ -165,31 +199,56 @@ async function handleContact(request, env) {
       body: emailForm,
     });
 
-    if (!emailResponse.ok) {
-      return jsonResponse(
-        { ok: false, error: "Unable to send your message right now" },
-        502
-      );
+    const responseText = await emailResponse.text();
+
+    let emailResult = null;
+
+    try {
+      emailResult = JSON.parse(responseText);
+    } catch {
+      // Response may not be JSON.
     }
 
-    const emailResult = await emailResponse.json();
+    // Diagnostic logging: do not log personal form fields or secrets.
+    console.log(
+      "FormSubmit result:",
+      JSON.stringify({
+        httpStatus: emailResponse.status,
+        httpOk: emailResponse.ok,
+        response:
+          emailResult ?? responseText.slice(0, 500),
+      })
+    );
+
+    const successValue = emailResult?.success;
 
     const accepted =
-      emailResult.success === true ||
-      emailResult.success === "true" ||
-      emailResult.success === "1";
+      successValue === true ||
+      successValue === "true" ||
+      successValue === "1";
 
-    if (!accepted) {
+    if (!emailResponse.ok || !accepted) {
       return jsonResponse(
-        { ok: false, error: "Unable to send your message right now" },
+        {
+          ok: false,
+          error: "Unable to send your message right now",
+        },
         502
       );
     }
 
     return jsonResponse({ ok: true });
-  } catch {
+  } catch (err) {
+    console.error(
+      "FormSubmit request failed:",
+      String(err)
+    );
+
     return jsonResponse(
-      { ok: false, error: "Unable to send your message right now" },
+      {
+        ok: false,
+        error: "Unable to reach the email service",
+      },
       502
     );
   }
@@ -203,7 +262,7 @@ export default {
       return handleContact(request, env);
     }
 
-    // Serve the existing static website.
+    // Serve the static website through the ASSETS binding.
     return env.ASSETS.fetch(request);
   },
 };
