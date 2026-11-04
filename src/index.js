@@ -4,8 +4,12 @@ const ALLOWED_HOSTNAMES = new Set([
   "www.bluechipcreations.com",
 ]);
 
-const EMAIL_ENDPOINT =
-  "https://formsubmit.co/ajax/rehan@bluechipcreations.com";
+const RESEND_ENDPOINT = "https://api.resend.com/emails";
+
+const EMAIL_FROM =
+  "Website Enquiries <no-reply@enquiry.bluechipcreations.com>";
+
+const EMAIL_TO = "rehan@bluechipcreations.com";
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -25,13 +29,13 @@ async function handleContact(request, env) {
     );
   }
 
-  if (!env.TURNSTILE_SECRET) {
-    console.error("TURNSTILE_SECRET is missing.");
+  if (!env.TURNSTILE_SECRET || !env.RESEND_API_KEY) {
+    console.error("Required server secrets are missing.");
 
     return jsonResponse(
       {
         ok: false,
-        error: "Server security configuration is missing",
+        error: "Server configuration is missing",
       },
       500
     );
@@ -139,10 +143,7 @@ async function handleContact(request, env) {
 
     verification = await verifyResponse.json();
   } catch (err) {
-    console.error(
-      "Turnstile request failed:",
-      String(err)
-    );
+    console.error("Turnstile request failed:", String(err));
 
     return jsonResponse(
       {
@@ -153,7 +154,7 @@ async function handleContact(request, env) {
     );
   }
 
-  // Require successful verification and the expected hostname/action.
+  // Require successful verification and expected hostname/action.
   if (
     verification.success !== true ||
     verification.action !== "contact" ||
@@ -179,111 +180,112 @@ async function handleContact(request, env) {
   }
 
   // Send email only after Turnstile succeeds.
-    // Send email only after Turnstile succeeds.
- 
-// Send email only after Turnstile succeeds.
+  const requestId = crypto.randomUUID();
 
-const requestId = crypto.randomUUID();
+  console.log(`[CONTACT ${requestId}] Starting Resend submission`);
 
-console.log(`[CONTACT ${requestId}] Starting email submission`);
+  const emailPayload = {
+    from: EMAIL_FROM,
+    to: [EMAIL_TO],
+    reply_to: email,
+    subject: "New Website Enquiry - Bluechip Creations",
 
-const emailPayload = {
-  name: name,
-  email: email,
-  message: message,
-  _subject: "New message from bluechipcreations.com",
-  _template: "table",
-};
+    text: `You have received a new enquiry through your website.
 
-try {
-  console.log(`[CONTACT ${requestId}] Sending request to FormSubmit`);
+Name: ${name}
+Email: ${email}
 
-  const emailResponse = await fetch(EMAIL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
-    body: JSON.stringify(emailPayload),
-  });
+Message:
+${message}
 
-  const responseText = await emailResponse.text();
-
-  let emailResult = null;
+--------------------------------
+Bluechip Creations Website Contact Form`,
+  };
 
   try {
-    emailResult = JSON.parse(responseText);
-  } catch {
-    console.error(
-      `[CONTACT ${requestId}] FormSubmit returned invalid JSON`
-    );
-  }
+    console.log(`[CONTACT ${requestId}] Sending email through Resend`);
 
-  // Log the actual response from FormSubmit.
-  console.log(
-    `[CONTACT ${requestId}] FORMSUBMIT DIAGNOSTIC`,
-    JSON.stringify({
-      httpStatus: emailResponse.status,
-      httpOk: emailResponse.ok,
-      contentType: emailResponse.headers.get("content-type"),
-      responseBody: responseText.slice(0, 1500),
-    })
-  );
+    const emailResponse = await fetch(RESEND_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(emailPayload),
+    });
 
-  const successValue = emailResult?.success;
+    const responseText = await emailResponse.text();
 
-  const accepted =
-    successValue === true ||
-    String(successValue).toLowerCase() === "true" ||
-    String(successValue) === "1";
+    let emailResult = null;
 
-  if (!emailResponse.ok || !accepted) {
-    console.error(
-      `[CONTACT ${requestId}] EMAIL SUBMISSION FAILED`,
+    try {
+      emailResult = JSON.parse(responseText);
+    } catch {
+      console.error(
+        `[CONTACT ${requestId}] Resend returned invalid JSON`
+      );
+    }
+
+    // Diagnostic logging without exposing visitor information.
+    console.log(
+      `[CONTACT ${requestId}] RESEND DIAGNOSTIC`,
       JSON.stringify({
-        status: emailResponse.status,
-        success: successValue,
-        response: emailResult ?? responseText.slice(0, 1500),
+        httpStatus: emailResponse.status,
+        httpOk: emailResponse.ok,
+        resendId: emailResult?.id || null,
+        error: emailResult?.message || emailResult?.error || null,
+      })
+    );
+
+    if (!emailResponse.ok || !emailResult?.id) {
+      console.error(
+        `[CONTACT ${requestId}] EMAIL SUBMISSION FAILED`,
+        JSON.stringify({
+          status: emailResponse.status,
+          error: emailResult?.message || emailResult?.error || "Unknown Resend error",
+          details: emailResult?.name || null,
+        })
+      );
+
+      return jsonResponse(
+        {
+          ok: false,
+          error: "Unable to send your message right now",
+          requestId: requestId,
+        },
+        502
+      );
+    }
+
+    console.log(
+      `[CONTACT ${requestId}] EMAIL ACCEPTED BY RESEND`,
+      emailResult.id
+    );
+
+    return jsonResponse({
+      ok: true,
+      requestId: requestId,
+    });
+
+  } catch (err) {
+    console.error(
+      `[CONTACT ${requestId}] RESEND REQUEST EXCEPTION`,
+      JSON.stringify({
+        message: String(err),
+        name: err?.name,
       })
     );
 
     return jsonResponse(
       {
         ok: false,
-        error: "Unable to send your message right now",
+        error: "Unable to reach the email service",
         requestId: requestId,
       },
       502
     );
   }
-
-  console.log(`[CONTACT ${requestId}] EMAIL SENT SUCCESSFULLY`);
-
-  return jsonResponse({
-    ok: true,
-    requestId: requestId,
-  });
-
-} catch (err) {
-
-  console.error(
-    `[CONTACT ${requestId}] EMAIL REQUEST EXCEPTION`,
-    JSON.stringify({
-      message: String(err),
-      name: err?.name,
-    })
-  );
-
-  return jsonResponse(
-    {
-      ok: false,
-      error: "Unable to reach the email service",
-      requestId: requestId,
-    },
-    502
-  );
-}
-
 }
 
 export default {
