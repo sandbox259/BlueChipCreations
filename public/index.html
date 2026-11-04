@@ -243,8 +243,41 @@
     padding:36px 56px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;
     font-family:'JetBrains Mono', monospace; font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; color:var(--grey);
   }
-  @media (max-width:640px){ footer{ justify-content:center; text-align:center; padding:28px 22px 56px; } }
+@media (max-width: 640px) {
+
+  .tag {
+    padding: 36px 12px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .contact-form {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .contact-form input,
+  .contact-form textarea {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .cf-turnstile {
+    width: 300px;
+    max-width: 100%;
+    margin: 18px 0;
+    overflow: hidden;
+  }
+
+  .contact-form .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+}
 </style>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
 
@@ -382,6 +415,14 @@
         </div>
         <!-- Honeypot field to reduce spam -->
         <input type="text" name="_honey" style="display:none">
+        <div
+          class="cf-turnstile"
+          data-sitekey="0x4AAAAAAFaGyQ08bLlsf5sA"
+          data-action="contact"
+          data-theme="light"
+          data-size="normal"
+          data-language="en">
+        </div>
         <button type="submit" class="btn btn-primary">Send message →</button>
       </form>
 
@@ -433,24 +474,52 @@
       submitBtn.textContent = 'Sending…';
 
       var formData = new FormData(form);
-      formData.append('_subject', 'New message from bluechipcreations.com');
-      formData.append('_captcha', 'false');
 
-      fetch('https://formsubmit.co/ajax/rehan@bluechipcreations.com', {
-        method: 'POST',
-        headers: { 'Accept': 'application/json' },
-        body: formData
-      })
-      .then(function(res){ return res.json(); })
-      .then(function(data){
-        form.style.display = 'none';
-        success.style.display = 'block';
-      })
-      .catch(function(){
-        errorNote.style.display = 'block';
-        submitBtn.disabled = false;
-        submitBtn.textContent = originalText;
-      });
+fetch('/api/contact', {
+  method: 'POST',
+  body: formData
+})
+.then(async function(res){
+
+  console.log("CONTACT API STATUS:", res.status);
+
+  var responseText = await res.text();
+
+  console.log("CONTACT API RAW RESPONSE:", responseText);
+
+  var data;
+
+  try {
+    data = JSON.parse(responseText);
+  } catch (error) {
+    console.error("CONTACT API JSON ERROR:", error);
+    throw new Error("Invalid server response");
+  }
+
+  console.log("CONTACT API DATA:", data);
+
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || 'Submission failed');
+  }
+
+  form.style.display = 'none';
+  success.style.display = 'block';
+
+})
+.catch(function(error){
+
+  console.error("CONTACT FORM ERROR:", error);
+
+  errorNote.textContent =
+    'Verification or submission failed. Please try again, or email rehan@bluechipcreations.com directly.';
+
+  errorNote.style.display = 'block';
+
+  if (window.turnstile) window.turnstile.reset();
+
+  submitBtn.disabled = false;
+  submitBtn.textContent = originalText;
+});
     });
   })();
 </script>
